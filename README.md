@@ -8,6 +8,8 @@
 
 ## 下载与安装
 
+版本更新内容见 [更新日志](CHANGELOG.md)。
+
 1. 打开 [Releases](https://github.com/Ally1212/RemoteVoiceInput/releases)，下载最新的 `RemoteVoiceInput-macOS-arm64.zip`。
 2. 解压后，将“远程语音输入”拖入“应用程序”，双击打开。
 3. 本版本适用于 **Apple Silicon Mac（M 系列芯片）、macOS 13 或更新版本**。Intel Mac 可尝试从源码自行构建。
