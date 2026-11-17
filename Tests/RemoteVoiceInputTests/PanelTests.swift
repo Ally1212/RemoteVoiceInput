@@ -46,6 +46,23 @@ final class PanelTests: XCTestCase {
     }
 
     @MainActor
+    func testCommandKClearsOnlyWithCommand() async throws {
+        _ = NSApplication.shared
+        let panel = ComposePanel(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        var clears = 0
+        panel.onClear = { clears += 1 }
+        for modifiers: NSEvent.ModifierFlags in [[], [.command, .shift], [.command]] {
+            let event = try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: modifiers,
+                timestamp: 0, windowNumber: 0, context: nil,
+                characters: "k", charactersIgnoringModifiers: "k", isARepeat: false, keyCode: 40
+            ))
+            _ = panel.performKeyEquivalent(with: event)
+        }
+        XCTAssertEqual(clears, 1)
+    }
+
+    @MainActor
     func testLauncherCannotTakeKeyboardFocus() async {
         _ = NSApplication.shared
         let launcher = LauncherPanel(

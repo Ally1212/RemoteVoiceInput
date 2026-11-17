@@ -9,11 +9,16 @@ final class ComposePanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
     var onConfirm: (() -> Void)?
+    var onClear: (() -> Void)?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
         if event.type == .keyDown, [36, 76].contains(event.keyCode), modifiers == [.command] {
             onConfirm?()
+            return true
+        }
+        if event.type == .keyDown, event.keyCode == 40, modifiers == [.command] {
+            onClear?()
             return true
         }
         return super.performKeyEquivalent(with: event)
@@ -27,13 +32,18 @@ final class LauncherPanel: NSPanel {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NSWindowDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private var panel: ComposePanel!
     private var editor: NSTextView!
     private var targetLabel: NSTextField!
     private var messageLabel: NSTextField!
     private var sendButton: NSButton!
+    private var permissionStatus: NSTextField!
+    private var permissionButton: NSButton!
+    private var permissionMenuItem: NSMenuItem!
+    private var openMenuItem: NSMenuItem!
+    private var instructionLabel: NSTextField!
     private var target: RemoteTarget?
     private let transport = Transport()
     private var hotKey: EventHotKeyRef?
@@ -65,17 +75,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = NSImage(systemSymbolName: "text.bubble", accessibilityDescription: "远程语音输入")
-        statusItem.button?.toolTip = "远程语音输入 · ⌃⌥⌘D"
+        statusItem.button?.toolTip = "远程语音输入 · ⌘L"
         let menu = NSMenu()
-        addItem("打开输入窗（先选远程输入框）", action: #selector(showComposer), menu: menu)
-        addItem("3 秒后选定远程位置…", action: #selector(selectRemotePosition), menu: menu)
-        addItem("授权辅助功能…", action: #selector(requestPermission), menu: menu)
-        addItem("本机粘贴自检（不发送到远程）", action: #selector(testLocalPaste), menu: menu)
-        addItem("清空文字，开始新一段", action: #selector(clearDraft), menu: menu)
+        menu.delegate = self
+        openMenuItem = NSMenuItem(title: "打开输入窗", action: #selector(showComposer), keyEquivalent: "")
+        openMenuItem.target = self
+        menu.addItem(openMenuItem)
+        permissionMenuItem = NSMenuItem(title: "", action: #selector(requestPermission), keyEquivalent: "")
+        permissionMenuItem.target = self
+        menu.addItem(permissionMenuItem)
         addItem("使用说明", action: #selector(showHelp), menu: menu)
+        let advanced = NSMenuItem(title: "更多", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "更多")
+        addItem("3 秒后点击远程输入框…", action: #selector(selectRemotePosition), menu: submenu)
+        addItem("本机粘贴自检", action: #selector(testLocalPaste), menu: submenu)
+        addItem("清空文字，开始新一段", action: #selector(clearDraft), menu: submenu)
+        advanced.submenu = submenu
+        menu.addItem(advanced)
         menu.addItem(.separator())
         addItem("退出", action: #selector(quit), menu: menu)
         statusItem.menu = menu
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        let trusted = AXIsProcessTrusted()
+        permissionMenuItem.title = trusted ? "辅助功能已授权 ✓" : "开启辅助功能…"
+        permissionMenuItem.action = trusted ? nil : #selector(requestPermission)
+        permissionMenuItem.isEnabled = !trusted
+        openMenuItem.title = shortcutAvailable ? "打开输入窗　⌘L" : "打开输入窗（快捷键不可用）"
     }
 
     private func addItem(_ title: String, action: Selector, menu: NSMenu) {
@@ -86,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 
     private func setupPanel() {
         panel = ComposePanel(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 365),
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 400),
             styleMask: [.titled, .closable], backing: .buffered, defer: false
         )
         panel.title = "远程语音输入"
@@ -96,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         panel.delegate = self
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         panel.onConfirm = { [weak self] in self?.send() }
+        panel.onClear = { [weak self] in self?.clearDraft() }
         panel.center()
         let root = NSStackView()
         root.orientation = .vertical
@@ -111,11 +139,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             root.topAnchor.constraint(equalTo: panel.contentView!.topAnchor),
             root.bottomAnchor.constraint(equalTo: panel.contentView!.bottomAnchor)
         ])
-        targetLabel = label("尚未选择远程输入框", size: 13, weight: .semibold)
+        targetLabel = label("把本机语音输入到远程 Mac", size: 16, weight: .semibold)
         root.addArrangedSubview(targetLabel)
-        let instruction = label("点远程位置后，点“语音输入”悬浮钮；⌘Return 发送。", size: 12)
-        instruction.textColor = .secondaryLabelColor
-        root.addArrangedSubview(instruction)
+        instructionLabel = label("", size: 13)
+        instructionLabel.maximumNumberOfLines = 2
+        instructionLabel.lineBreakMode = .byWordWrapping
+        instructionLabel.textColor = .secondaryLabelColor
+        root.addArrangedSubview(instructionLabel)
+        instructionLabel.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -44).isActive = true
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
@@ -138,9 +169,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         scroll.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -44).isActive = true
         scroll.heightAnchor.constraint(equalToConstant: 150).isActive = true
 
-        let privacy = label("发送会替换本机剪贴板；文字会保留，便于失败后手动粘贴。", size: 11)
-        privacy.textColor = .secondaryLabelColor
-        root.addArrangedSubview(privacy)
+        let permissionRow = NSStackView()
+        permissionRow.spacing = 8
+        permissionStatus = label("", size: 12)
+        permissionButton = NSButton(title: "开启辅助功能", target: self, action: #selector(requestPermission))
+        permissionButton.bezelStyle = .rounded
+        permissionRow.addArrangedSubview(permissionStatus)
+        permissionRow.addArrangedSubview(permissionButton)
+        root.addArrangedSubview(permissionRow)
+        refreshPermissionStatus()
         messageLabel = label("", size: 12)
         messageLabel.maximumNumberOfLines = 2
         messageLabel.lineBreakMode = .byWordWrapping
@@ -150,19 +187,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
 
         let buttons = NSStackView()
         buttons.spacing = 12
-        let permission = NSButton(title: "授权", target: self, action: #selector(requestPermission))
-        permission.bezelStyle = .rounded
-        let close = NSButton(title: "收起", target: self, action: #selector(hidePanel))
-        close.bezelStyle = .rounded
-        let select = NSButton(title: "选远程位置（3秒）", target: self, action: #selector(selectRemotePosition))
-        select.bezelStyle = .rounded
         sendButton = NSButton(title: "发送到远程  ⌘↩", target: self, action: #selector(send))
         sendButton.bezelStyle = .rounded
         sendButton.keyEquivalent = "\r"
         sendButton.keyEquivalentModifierMask = [.command]
-        buttons.addArrangedSubview(permission)
-        buttons.addArrangedSubview(select)
-        buttons.addArrangedSubview(close)
         buttons.addArrangedSubview(sendButton)
         root.addArrangedSubview(buttons)
         // Provide a real Edit menu so normal typing, pasting and input methods work.
@@ -237,16 +265,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         showComposer()
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        refreshPermissionStatus()
+    }
+
+    private func refreshPermissionStatus() {
+        guard permissionStatus != nil, permissionButton != nil else { return }
+        let trusted = AXIsProcessTrusted()
+        permissionStatus.stringValue = trusted ? "✓ 辅助功能已授权" : "辅助功能尚未授权"
+        permissionStatus.textColor = trusted ? .systemGreen : .secondaryLabelColor
+        permissionButton.isHidden = trusted
+    }
+
     @objc private func selectRemotePosition() {
         guard !sending else { return }
         captureTask?.cancel()
+        setMessage("请在 3 秒内点击远程电脑里的输入框，输入窗会自动回来。")
         panel.orderOut(nil)
         if let target, target.exists { try? target.activate() }
         captureTask = Task { @MainActor [weak self] in
             do { try await Task.sleep(for: .seconds(3)) } catch { return }
             guard let self else { return }
             self.captureTask = nil
-            self.showComposer()
+            self.presentComposer(preserveDraft: true)
         }
     }
 
@@ -273,9 +314,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             return
         }
         let id = EventHotKeyID(signature: 0x5256494E, id: 1)
-        // Option-Command-D alone is reserved for the macOS Dock.
         let status = RegisterEventHotKey(
-            UInt32(kVK_ANSI_D), UInt32(controlKey | optionKey | cmdKey), id,
+            UInt32(kVK_ANSI_L), UInt32(cmdKey), id,
             GetApplicationEventTarget(), 0, &hotKey
         )
         shortcutAvailable = status == noErr
@@ -283,25 +323,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
     }
 
     @objc private func showComposer() {
+        presentComposer(preserveDraft: false)
+    }
+
+    private func presentComposer(preserveDraft: Bool) {
         guard !sending else { return }
+        if !preserveDraft && !panel.isVisible {
+            editor.string = ""
+            sessionSent = false
+            lastFailure = nil
+            refreshStatusTitle()
+        }
         captureTask?.cancel()
         captureTask = nil
-        // Opening our own panel must not erase the last valid remote target or an unsent draft.
+        // Keep the last valid remote target when opening our own panel.
         if NSWorkspace.shared.frontmostApplication?.bundleIdentifier != Bundle.main.bundleIdentifier {
             do {
                 target = try RemoteTarget.capture()
                 setMessage(lastFailure.map { "上次未发送：\($0)" }
                     ?? (sessionSent ? "上次已尝试粘贴，草稿保留。核对远端后，修改文字或从菜单清空开始新一段。"
-                        : "已选定原连接。请用你平时的豆包语音快捷键输入。"))
+                        : "已找到屏幕共享窗口。请用豆包说话或直接输入文字。"))
             } catch {
                 if target?.exists != true { target = nil }
-                setMessage(lastFailure ?? error.localizedDescription)
+                setMessage(lastFailure ?? "准备好后，切换到屏幕共享并点击远程输入框。")
                 logger.info("Target capture unavailable; accessibility=\(AXIsProcessTrusted())")
             }
         }
-        targetLabel.stringValue = target.map { "目标：\($0.title)" } ?? "尚未选择远程输入框"
+        targetLabel.stringValue = "把本机语音输入到远程 Mac"
+        refreshPermissionStatus()
+        instructionLabel.stringValue = shortcutAvailable
+            ? "点击远程输入框后按 ⌘L，输入文字后按 ⌘↩ 发送，⌘K 清空。\n首次使用：在屏幕共享的“编辑”菜单开启共享剪贴板。"
+            : "点击远程输入框后点右上角“语音输入”，输入文字再发送。\n首次使用：在屏幕共享的“编辑”菜单开启共享剪贴板。"
         if !shortcutAvailable {
-            setMessage("快捷键不可用，请点“选远程位置（3秒）”，然后点击远程输入框。")
+            setMessage("请切换到屏幕共享，点击远程输入框，再点右上角“语音输入”。")
         }
         sendButton.isEnabled = target != nil && !sessionSent
         launcher.orderOut(nil)
@@ -333,7 +387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
-        setMessage("授权后，点“选远程位置（3秒）”，再在远程输入框里点一下。")
+        setMessage("开启辅助功能后，回到这里即可看到授权状态。")
     }
 
     @objc private func send() {
@@ -351,7 +405,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
             return
         }
         guard let target else {
-            setMessage("请点“选远程位置（3秒）”，再点击远程输入框；文字会保留。")
+            setMessage("请切换到屏幕共享，点击远程输入框，再点右上角“语音输入”；文字会保留。")
             return
         }
         guard AXIsProcessTrusted() else { requestPermission(); return }
@@ -405,7 +459,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         editor.string = ""
         sessionSent = false
         lastFailure = nil
-        showComposer()
+        refreshStatusTitle()
+        sendButton.isEnabled = target != nil
+        setMessage("文字已清空。")
+        if !panel.isVisible { showComposer() }
     }
 
     @objc private func testLocalPaste() {
@@ -513,12 +570,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTextViewDelegate, NS
         4. 用平时的豆包语音快捷键说话，看到文字后按 ⌘Enter。
         5. 工具返回原连接，等待共享剪贴板同步，再粘贴一次，不自动按回车。
 
-        没看到悬浮钮？点本工具的“选远程位置（3秒）”，再在三秒内点击远程输入框。
-        全局快捷键 ⌃⌥⌘D 仍可使用，但不再是必需步骤。
+        没看到悬浮钮？在菜单栏打开本工具的“更多”，选择“3 秒后点击远程输入框”。
+        全局快捷键 ⌘L 仍可使用，但不再是必需步骤。
         发送期间不要点击、打字或切换窗口；这些操作会取消发送。
         文字留在本机剪贴板，不自动恢复原剪贴板。
         屏幕共享没有远端确认接口，请以远端实际显示为准；不要盲目重试。
-        收起或关闭输入窗不会发送，未发送草稿只保留在内存。
+        收起或关闭输入窗不会发送；下次打开会清空文字。按 ⌘K 可立即清空。
         本工具不录音、不保存听写历史、不调用识别服务。豆包按其自身设置处理语音。
         """
         alert.runModal()

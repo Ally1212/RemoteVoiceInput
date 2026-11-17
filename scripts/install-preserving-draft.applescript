@@ -10,7 +10,7 @@ on run argv
             if exists process "RemoteVoiceInput" then
                 tell process "RemoteVoiceInput"
                     if not (exists window "远程语音输入") then
-                        click menu item "打开输入窗（先选远程输入框）" of menu 1 of menu bar item 1 of menu bar 2
+                        click (first menu item of menu 1 of menu bar item 1 of menu bar 2 whose name starts with "打开输入窗")
                     end if
                     if not (exists window "远程语音输入") then error "Open the existing compose window before updating"
                     set savedDraft to value of text area 1 of scroll area 1 of window "远程语音输入"
