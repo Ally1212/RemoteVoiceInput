@@ -10,6 +10,8 @@
 
 版本更新内容见 [更新日志](CHANGELOG.md)。
 
+![0.3.0 紧凑输入窗](designs/compact-native/preview.png)
+
 1. 打开 [Releases](https://github.com/Ally1212/RemoteVoiceInput/releases)，下载最新的 `RemoteVoiceInput-macOS-arm64.zip`。
 2. 解压后，将“远程语音输入”拖入“应用程序”，双击打开。
 3. 本版本适用于 **Apple Silicon Mac（M 系列芯片）、macOS 13 或更新版本**。Intel Mac 可尝试从源码自行构建。
@@ -64,6 +66,6 @@ zsh scripts/build.sh
 open dist/RemoteVoiceInput.app
 ```
 
-构建脚本默认优先使用本机 Apple Development 签名身份，否则使用 ad-hoc 签名。可设置 `RVI_SIGN_IDENTITY=-` 明确使用 ad-hoc 签名。构建产物未经过 Apple 公证。
+构建脚本默认优先使用本机 Apple Development 签名身份，否则使用 ad-hoc 签名。可设置 `RVI_SIGN_IDENTITY=-` 明确使用 ad-hoc 签名。发布打包时应同时设置 `RVI_OUTPUT_DIR="$PWD/dist/release"`，避免覆盖本机已授权的开发签名应用。构建产物未经过 Apple 公证。
 
 源代码位于 `Sources/`，自动化测试位于 `Tests/`。原理和排障细节见 [排障与验收记录](docs/TROUBLESHOOTING.md)。仓库中的历史实机验收记录针对当时的环境，不能代替在你的设备上检查远程结果。
